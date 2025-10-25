@@ -1,0 +1,3 @@
+# This scene intentionally remains empty. Add an empty GameObject named "Bootstrap" with the Bootstrapper component if Unity ever strips it.
+# At runtime the Bootstrapper script will spawn the camera, lighting, board, tokens, and UI. If the scene loads without content, the
+# Bootstrapper schedules a rebuild after 10 seconds as a safety fallback.
