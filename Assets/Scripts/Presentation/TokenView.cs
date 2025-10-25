@@ -1,12 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
-
-public enum TokenColor
-{
-    Red,
-    Blue
-}
+using Uckers.Domain.Model;
 
 public enum TokenPlacementState
 {
@@ -16,12 +11,12 @@ public enum TokenPlacementState
     Finished
 }
 
-public class Token : MonoBehaviour
+public class TokenView : MonoBehaviour
 {
     [SerializeField] private float moveSpeed = 3f;
     [SerializeField] private float arcHeight = 0.15f;
 
-    public TokenColor Color { get; private set; }
+    public PlayerId Player { get; private set; }
     public int Progress { get; private set; } = -1;
     public TokenPlacementState PlacementState { get; private set; } = TokenPlacementState.Base;
     public bool IsAnimating => moveRoutine != null;
@@ -33,12 +28,12 @@ public class Token : MonoBehaviour
     private MeshRenderer highlightRenderer;
     private Coroutine moveRoutine;
 
-    public void Initialise(Board boardRef, TokenColor color, Vector3 baseSpot, Material material)
+    public void Initialise(BoardBuilder boardRef, PlayerId player, Vector3 baseSpot, Material material)
     {
         _ = boardRef;
-        Color = color;
+        Player = player;
         basePosition = baseSpot + Vector3.up * 0.3f;
-        name = $"{color} Token";
+        name = $"{player} Token";
         transform.position = basePosition;
 
         BuildVisuals(material);
