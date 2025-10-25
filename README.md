@@ -30,3 +30,7 @@ No manual scene setup is required. All meshes, materials, lighting, and UI are g
 1. Initialize git in the Unity project root (if not already): `git init`.
 2. Commit changes (this repo already includes a Unity-ready `.gitignore`).
 3. Push to your GitHub remote: `git remote add origin <url>` then `git push -u origin main`.
+
+## Running Tests
+- Open the Unity Test Runner (Window > General > Test Runner).
+- Select the **Edit Mode** tab and run the `Uckers.Tests.Domain.Smoke.SmokeTests` suite.
