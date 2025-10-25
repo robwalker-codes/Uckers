@@ -1,6 +1,9 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
+using Uckers.Domain.Model;
+using Uckers.Domain.Services;
 
 public class Bootstrapper : MonoBehaviour
 {
@@ -11,73 +14,88 @@ public class Bootstrapper : MonoBehaviour
 
     private void Start()
     {
-        BuildScene();
-        StartCoroutine(FallbackRebuild());
+        StartCoroutine(BuildScene());
     }
 
-    private void BuildScene()
+    private IEnumerator BuildScene()
     {
         if (built)
         {
-            return;
+            yield break;
         }
 
         built = true;
 
         var boardGo = new GameObject("BoardRoot");
         boardGo.transform.position = Vector3.zero;
-        var board = boardGo.AddComponent<Board>();
+        var board = boardGo.AddComponent<BoardBuilder>();
         board.Build();
 
         var manager = gameObject.AddComponent<GameManager>();
 
         var uiGo = new GameObject("UIRoot");
         var ui = uiGo.AddComponent<UIController>();
+        ui.Build(manager.RequestRoll);
+        ui.SetRollEnabled(false);
 
-        var redTokens = SpawnTokens(board, TokenColor.Red);
-        var blueTokens = SpawnTokens(board, TokenColor.Blue);
+        yield return WaitForPlayerSelection(ui);
 
-        manager.Initialise(board, redTokens, blueTokens, ui);
+        int playerCount = Mathf.Clamp(ui.SelectedPlayerCount, GameConfig.MinPlayers, GameConfig.MaxPlayers);
+        var selectedPlayers = GameConfig.PlayerOrder.Take(playerCount).ToList();
+
+        var tokenMap = SpawnTokens(board, selectedPlayers);
+        var turnManager = new TurnManager(selectedPlayers);
+        var adapter = new DomainAdapter(board, tokenMap, selectedPlayers);
+
+        manager.Initialise(board, tokenMap, ui, turnManager, adapter);
 
         CreateCamera(board);
         CreateLight();
     }
 
-    private IEnumerator FallbackRebuild()
+    private IEnumerator WaitForPlayerSelection(UIController ui)
     {
-        yield return new WaitForSeconds(10f);
-        if (FindObjectOfType<GameManager>() == null)
+        while (!ui.HasSelectedPlayerCount)
         {
-            built = false;
-            BuildScene();
+            yield return null;
         }
     }
 
-    private List<Token> SpawnTokens(Board board, TokenColor color)
+    private Dictionary<PlayerId, List<TokenView>> SpawnTokens(BoardBuilder board, IReadOnlyList<PlayerId> players)
     {
-        var list = new List<Token>();
-        var parent = new GameObject($"{color}Tokens").transform;
-        parent.SetParent(board.transform, false);
-        var baseSpots = color == TokenColor.Red ? board.RedBaseSpots : board.BlueBaseSpots;
-        var mat = color == TokenColor.Red
-            ? MaterialsUtil.GetOrCreate("TeamRed", new Color(0.8f, 0.1f, 0.1f))
-            : MaterialsUtil.GetOrCreate("TeamBlue", new Color(0.1f, 0.3f, 0.9f));
-
-        for (int i = 0; i < 4; i++)
+        var map = new Dictionary<PlayerId, List<TokenView>>();
+        foreach (var player in players)
         {
-            var tokenGo = new GameObject($"{color}Token_{i + 1}");
-            tokenGo.transform.SetParent(parent, false);
-            var token = tokenGo.AddComponent<Token>();
-            var basePos = baseSpots[Mathf.Clamp(i, 0, baseSpots.Count - 1)];
-            token.Initialise(board, color, basePos, mat);
-            token.SetProgress(-1, TokenPlacementState.Base);
-            list.Add(token);
+            var parent = new GameObject($"{player}Tokens").transform;
+            parent.SetParent(board.transform, false);
+            var baseSpots = board.BaseSpots[player];
+            var material = CreatePlayerMaterial(player);
+            var list = new List<TokenView>();
+
+            for (int i = 0; i < GameConfig.TokensPerPlayer; i++)
+            {
+                var tokenGo = new GameObject($"{player}Token_{i + 1}");
+                tokenGo.transform.SetParent(parent, false);
+                var token = tokenGo.AddComponent<TokenView>();
+                var basePos = baseSpots[Mathf.Clamp(i, 0, baseSpots.Count - 1)];
+                token.Initialise(board, player, basePos, material);
+                token.SetProgress(-1, TokenPlacementState.Base);
+                list.Add(token);
+            }
+
+            map[player] = list;
         }
 
-        return list;
+        return map;
     }
 
-    private void CreateCamera(Board board)
+    private Material CreatePlayerMaterial(PlayerId player)
+    {
+        var colour = GameConfig.PlayerColours[player];
+        return MaterialsUtil.GetOrCreate($"Team{player}", new Color(colour.r, colour.g, colour.b, colour.a));
+    }
+
+    private void CreateCamera(BoardBuilder board)
     {
         var rig = new GameObject("CameraRig");
         var camGo = new GameObject("MainCamera");

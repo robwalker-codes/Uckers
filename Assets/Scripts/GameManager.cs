@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using Uckers.Domain.Model;
+using Uckers.Domain.Services;
 
 public class GameManager : MonoBehaviour
 {
@@ -15,41 +17,31 @@ public class GameManager : MonoBehaviour
         GameOver
     }
 
-    private class MoveOption
-    {
-        public Token Token;
-        public List<Vector3> Positions = new List<Vector3>();
-        public List<int> Progress = new List<int>();
-        public List<TokenPlacementState> States = new List<TokenPlacementState>();
-        public TokenPlacementState FinalState;
-    }
-
-    private Board board;
+    private BoardBuilder board;
     private UIController ui;
-    private readonly List<Token> redTokens = new List<Token>();
-    private readonly List<Token> blueTokens = new List<Token>();
+    private TurnManager turnManager;
+    private DomainAdapter domainAdapter;
 
     private TurnState state = TurnState.Idle;
-    private TokenColor currentPlayer = TokenColor.Red;
     private readonly System.Random rng = new System.Random();
     private int lastRoll;
 
-    private readonly List<MoveOption> moveOptions = new List<MoveOption>();
+    private readonly List<DomainAdapter.MovePlan> moveOptions = new List<DomainAdapter.MovePlan>();
     private int selectedIndex;
     private float lastClickTime;
     private const float DoubleClickWindow = 0.3f;
 
-    public void Initialise(Board boardRef, IEnumerable<Token> reds, IEnumerable<Token> blues, UIController controller)
+    public void Initialise(BoardBuilder boardRef, IDictionary<PlayerId, List<TokenView>> tokens, UIController controller, TurnManager manager, DomainAdapter adapter)
     {
         board = boardRef;
         ui = controller;
-        redTokens.AddRange(reds);
-        blueTokens.AddRange(blues);
+        turnManager = manager;
+        domainAdapter = adapter;
+        _ = tokens;
 
-        ui.Build(AttemptRoll);
         ui.SetRollEnabled(true);
         ui.SetRollLabel("Roll");
-        ui.SetTurn("Red to roll");
+        ui.SetTurn($"{turnManager.CurrentPlayer} to roll");
         ui.SetStatus("Press Roll or Space to begin");
     }
 
@@ -110,16 +102,21 @@ public class GameManager : MonoBehaviour
         }
     }
 
-    private bool TryRaycastToken(out Token token)
+    private bool TryRaycastToken(out TokenView token)
     {
         token = null;
         var ray = Camera.main != null ? Camera.main.ScreenPointToRay(Input.mousePosition) : new Ray();
         if (Physics.Raycast(ray, out var hit, 100f))
         {
-            token = hit.collider.GetComponentInParent<Token>();
+            token = hit.collider.GetComponentInParent<TokenView>();
         }
 
         return token != null;
+    }
+
+    public void RequestRoll()
+    {
+        AttemptRoll();
     }
 
     private void AttemptRoll()
@@ -132,10 +129,11 @@ public class GameManager : MonoBehaviour
         state = TurnState.Rolling;
         ui.SetRollEnabled(false);
         lastRoll = rng.Next(1, 7);
+        var currentPlayer = turnManager.CurrentPlayer;
         ui.SetStatus($"{currentPlayer} rolled {lastRoll}");
 
         moveOptions.Clear();
-        BuildMoveOptions();
+        BuildMoveOptions(currentPlayer);
 
         if (moveOptions.Count == 0)
         {
@@ -165,124 +163,10 @@ public class GameManager : MonoBehaviour
         AdvanceTurn(extraRoll);
     }
 
-    private void BuildMoveOptions()
+    private void BuildMoveOptions(PlayerId player)
     {
-        var tokens = GetTokensForPlayer(currentPlayer);
-        foreach (var token in tokens)
-        {
-            var option = BuildOptionForToken(token, lastRoll);
-            if (option != null)
-            {
-                moveOptions.Add(option);
-            }
-        }
-    }
-
-    private MoveOption BuildOptionForToken(Token token, int roll)
-    {
-        if (token.PlacementState == TokenPlacementState.Finished)
-        {
-            return null;
-        }
-
-        var option = new MoveOption { Token = token };
-        TokenPlacementState currentState = token.PlacementState;
-        int progress = token.Progress;
-        int lapCount = board.Lap.Count;
-        int homeCount = board.GetHomeCount(token.Color);
-        int finish = board.GetFinishProgress(token.Color);
-
-        if (currentState == TokenPlacementState.Base)
-        {
-            if (roll != 6)
-            {
-                return null;
-            }
-
-            int targetProgress = 0;
-            Vector3 pos = Raise(board.GetProgressPosition(token.Color, targetProgress));
-            option.Positions.Add(pos);
-            option.Progress.Add(targetProgress);
-            option.States.Add(TokenPlacementState.Track);
-            option.FinalState = TokenPlacementState.Track;
-            return option;
-        }
-
-        bool directionForward = true;
-        for (int step = 0; step < roll; step++)
-        {
-            bool lastStep = step == roll - 1;
-            int nextProgress;
-            TokenPlacementState nextState;
-
-            if (progress < lapCount - 1)
-            {
-                nextProgress = progress + 1;
-                nextState = TokenPlacementState.Track;
-            }
-            else if (progress == lapCount - 1)
-            {
-                nextProgress = progress + 1;
-                nextState = TokenPlacementState.Home;
-            }
-            else
-            {
-                if (homeCount <= 0)
-                {
-                    return null;
-                }
-
-                int homeIndex = progress - lapCount;
-                int maxHome = homeCount - 1;
-
-                if (directionForward)
-                {
-                    if (homeIndex < maxHome)
-                    {
-                        homeIndex++;
-                    }
-                    else
-                    {
-                        directionForward = false;
-                        homeIndex--;
-                    }
-                }
-                else
-                {
-                    if (homeIndex > 0)
-                    {
-                        homeIndex--;
-                    }
-                    else
-                    {
-                        directionForward = true;
-                        homeIndex++;
-                    }
-                }
-
-                homeIndex = Mathf.Clamp(homeIndex, 0, maxHome);
-                nextProgress = lapCount + homeIndex;
-                nextState = TokenPlacementState.Home;
-            }
-
-            if (nextProgress == finish && lastStep)
-            {
-                nextState = TokenPlacementState.Finished;
-            }
-
-            progress = nextProgress;
-            option.Positions.Add(Raise(board.GetProgressPosition(token.Color, progress)));
-            option.Progress.Add(progress);
-            option.States.Add(nextState);
-        }
-
-        if (option.Positions.Count == 0)
-        {
-            return null;
-        }
-
-        option.FinalState = option.States.Last();
-        return option;
+        var plans = domainAdapter.GetLegalMoves(player, lastRoll);
+        moveOptions.AddRange(plans);
     }
 
     private void ConfirmSelection()
@@ -294,27 +178,40 @@ public class GameManager : MonoBehaviour
 
         var option = moveOptions[selectedIndex];
         state = TurnState.Animating;
-        ui.SetStatus($"{currentPlayer} moving");
+        ui.SetStatus($"{turnManager.CurrentPlayer} moving");
         ui.SetRollEnabled(false);
         UpdateSelectionHighlights(clearOnly: true);
         StartCoroutine(ResolveMove(option));
     }
 
-    private IEnumerator ResolveMove(MoveOption option)
+    private IEnumerator ResolveMove(DomainAdapter.MovePlan option)
     {
-        yield return option.Token.AnimateMove(option.Positions, option.Progress, option.States);
+        var positions = new List<Vector3>(option.WorldPositions);
+        var progress = new List<int>(option.ProgressSequence);
+        var states = new List<TokenPlacementState>(option.StateSequence);
 
-        HandleCaptures(option);
+        yield return option.Token.AnimateMove(positions, progress, states);
 
-        if (option.FinalState == TokenPlacementState.Finished)
+        foreach (var captured in option.CapturedTokens)
         {
-            option.Token.SetProgress(option.Progress.Last(), TokenPlacementState.Finished);
+            captured.ReturnToBase();
         }
 
-        if (CheckWin(option.Token.Color))
+        if (option.CapturedTokens.Count > 0)
+        {
+            var capturedPlayers = option.CapturedTokens
+                .Select(t => t.Player)
+                .Distinct()
+                .Select(p => p.ToString());
+            ui.SetStatus($"{option.Token.Player} captured {string.Join(", ", capturedPlayers)}!");
+        }
+
+        domainAdapter.ApplyMove(option);
+
+        if (CheckWin(option.Token.Player))
         {
             state = TurnState.GameOver;
-            ui.SetStatus($"{option.Token.Color} wins!");
+            ui.SetStatus($"{option.Token.Player} wins!");
             ui.SetTurn("Game Over");
             ui.SetRollLabel("Restart (R)");
             yield break;
@@ -322,29 +219,6 @@ public class GameManager : MonoBehaviour
 
         bool extraRoll = lastRoll == 6;
         AdvanceTurn(extraRoll);
-    }
-
-    private void HandleCaptures(MoveOption option)
-    {
-        var opponentTokens = GetTokensForPlayer(Opponent(option.Token.Color));
-        foreach (var enemy in opponentTokens)
-        {
-            if (enemy == null)
-            {
-                continue;
-            }
-
-            if (enemy.PlacementState == TokenPlacementState.Base || enemy.PlacementState == TokenPlacementState.Finished)
-            {
-                continue;
-            }
-
-            if (enemy.Progress == option.Token.Progress && enemy.PlacementState == option.Token.PlacementState)
-            {
-                enemy.ReturnToBase();
-                ui.SetStatus($"{option.Token.Color} captured an enemy!");
-            }
-        }
     }
 
     private void AdvanceTurn(bool extraRoll)
@@ -357,16 +231,16 @@ public class GameManager : MonoBehaviour
             state = TurnState.Idle;
             ui.SetRollEnabled(true);
             ui.SetRollLabel("Roll");
-            ui.SetTurn($"{currentPlayer} extra roll");
+            ui.SetTurn($"{turnManager.CurrentPlayer} extra roll");
             ui.SetStatus("Roll again!");
         }
         else
         {
-            currentPlayer = Opponent(currentPlayer);
+            turnManager.AdvanceTurn(false);
             state = TurnState.Idle;
             ui.SetRollEnabled(true);
             ui.SetRollLabel("Roll");
-            ui.SetTurn($"{currentPlayer} to roll");
+            ui.SetTurn($"{turnManager.CurrentPlayer} to roll");
             ui.SetStatus("Press Roll or Space");
         }
     }
@@ -397,10 +271,9 @@ public class GameManager : MonoBehaviour
         }
     }
 
-    private bool CheckWin(TokenColor color)
+    private bool CheckWin(PlayerId player)
     {
-        var tokens = GetTokensForPlayer(color);
-        return tokens.All(t => t.PlacementState == TokenPlacementState.Finished);
+        return domainAdapter.HasPlayerWon(player);
     }
 
     private void RestartScene()
@@ -408,18 +281,4 @@ public class GameManager : MonoBehaviour
         SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
     }
 
-    private List<Token> GetTokensForPlayer(TokenColor color)
-    {
-        return color == TokenColor.Red ? redTokens : blueTokens;
-    }
-
-    private TokenColor Opponent(TokenColor color)
-    {
-        return color == TokenColor.Red ? TokenColor.Blue : TokenColor.Red;
-    }
-
-    private Vector3 Raise(Vector3 pos)
-    {
-        return pos + Vector3.up * 0.3f;
-    }
 }

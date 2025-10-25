@@ -34,3 +34,6 @@ No manual scene setup is required. All meshes, materials, lighting, and UI are g
 ## Running Tests
 - Open the Unity Test Runner (Window > General > Test Runner).
 - Select the **Edit Mode** tab and run the `Uckers.Tests.Domain.Smoke.SmokeTests` suite.
+
+## Player Count
+Choose between 2, 3, or 4 players when the game starts. If no selection is made within a few seconds the game automatically defaults to a 2-player match.

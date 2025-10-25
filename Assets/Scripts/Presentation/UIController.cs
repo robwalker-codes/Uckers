@@ -2,14 +2,24 @@ using System;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
+using Uckers.Domain.Model;
 
 public class UIController : MonoBehaviour
 {
+    private const float SelectionFallbackDelay = 3f;
+
     public Button RollButton { get; private set; }
     public Text StatusText { get; private set; }
     public Text TurnText { get; private set; }
 
     private Action onRollClicked;
+    private Text playerCountStatus;
+    private int? selectedPlayerCount;
+    private float selectionStartTime;
+    private bool selectionFinalised;
+
+    public int SelectedPlayerCount => selectedPlayerCount ?? GameConfig.DefaultPlayerCount;
+    public bool HasSelectedPlayerCount => selectedPlayerCount.HasValue;
 
     public void Build(Action rollAction)
     {
@@ -35,6 +45,16 @@ public class UIController : MonoBehaviour
 
         var controls = CreateText(canvas.transform, "Controls", new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(20f, 80f), font, 16, TextAnchor.LowerLeft);
         controls.text = "Space: Roll  •  Click: Cycle  •  Enter: Confirm  •  R: Restart";
+
+        BuildPlayerCountSelector(canvas.transform, font);
+    }
+
+    private void Update()
+    {
+        if (!selectionFinalised && Time.unscaledTime - selectionStartTime >= SelectionFallbackDelay)
+        {
+            FinalisePlayerCount(GameConfig.DefaultPlayerCount, triggerEvent: false);
+        }
     }
 
     public void SetRollEnabled(bool enabled)
@@ -69,13 +89,65 @@ public class UIController : MonoBehaviour
         }
     }
 
+    private void BuildPlayerCountSelector(Transform parent, Font font)
+    {
+        selectionStartTime = Time.unscaledTime;
+        selectionFinalised = false;
+        selectedPlayerCount = null;
+
+        var panel = new GameObject("PlayerCountPanel");
+        panel.transform.SetParent(parent, false);
+        var rect = panel.AddComponent<RectTransform>();
+        rect.anchorMin = new Vector2(0.5f, 1f);
+        rect.anchorMax = new Vector2(0.5f, 1f);
+        rect.anchoredPosition = new Vector2(0f, -140f);
+        rect.sizeDelta = new Vector2(320f, 60f);
+
+        var image = panel.AddComponent<Image>();
+        image.color = new Color(0f, 0f, 0f, 0.5f);
+
+        var label = CreateText(panel.transform, "Label", new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(60f, 0f), font, 18, TextAnchor.MiddleLeft);
+        label.text = "Players:";
+
+        playerCountStatus = CreateText(panel.transform, "Status", new Vector2(0.5f, 0f), new Vector2(0.5f, 1f), new Vector2(0f, 0f), font, 18, TextAnchor.MiddleCenter);
+        playerCountStatus.text = "Select 2 / 3 / 4";
+
+        float buttonWidth = 50f;
+        float spacing = 10f;
+        float startX = 120f;
+        for (int i = 0; i < 3; i++)
+        {
+            int count = i + GameConfig.MinPlayers;
+            var button = CreateButton(panel.transform, $"PlayerCount_{count}", new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(startX + i * (buttonWidth + spacing), 0f), new Vector2(buttonWidth, 40f), font, count.ToString());
+            int captured = count;
+            button.onClick.AddListener(() => FinalisePlayerCount(captured, triggerEvent: true));
+        }
+    }
+
+    private void FinalisePlayerCount(int count, bool triggerEvent)
+    {
+        if (selectionFinalised)
+        {
+            return;
+        }
+
+        selectedPlayerCount = Mathf.Clamp(count, GameConfig.MinPlayers, GameConfig.MaxPlayers);
+        selectionFinalised = true;
+        playerCountStatus.text = $"Players: {selectedPlayerCount}";
+
+        if (triggerEvent)
+        {
+            SendMessageUpwards("OnPlayerCountSelected", selectedPlayerCount, SendMessageOptions.DontRequireReceiver);
+        }
+    }
+
     private Text CreateText(Transform parent, string name, Vector2 anchorMin, Vector2 anchorMax, Vector2 anchoredPos, Font font, int size, TextAnchor anchor)
     {
         var go = new GameObject(name);
         go.transform.SetParent(parent, false);
         var rect = go.AddComponent<RectTransform>();
         rect.anchorMin = anchorMin;
-       rect.anchorMax = anchorMax;
+        rect.anchorMax = anchorMax;
         rect.anchoredPosition = anchoredPos;
         if (anchorMin == Vector2.zero && anchorMax == Vector2.one)
         {
