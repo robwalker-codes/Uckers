@@ -37,3 +37,8 @@ No manual scene setup is required. All meshes, materials, lighting, and UI are g
 
 ## Player Count
 Choose between 2, 3, or 4 players when the game starts. If no selection is made within a few seconds the game automatically defaults to a 2-player match.
+
+## Troubleshooting
+
+### No cameras rendering
+The Bootstrapper now auto-attaches itself at runtime and guarantees a main camera and directional light even if the scene starts empty. This behaviour is covered by the edit-mode `BootstrapRenderingTests` suite.

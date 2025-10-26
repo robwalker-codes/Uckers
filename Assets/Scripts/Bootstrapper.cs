@@ -2,15 +2,35 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using Object = UnityEngine.Object;
 using Uckers.Domain.Model;
 using Uckers.Domain.Services;
 
 public class Bootstrapper : MonoBehaviour
 {
-    [SerializeField] private Vector3 cameraOffset = new Vector3(0f, 10f, -12f);
-    [SerializeField] private Vector3 lightEuler = new Vector3(45f, -30f, 0f);
+    private const string CameraRigName = "CameraRig";
+    private const string MainCameraName = "Main Camera";
+    private const string DirectionalLightName = "Directional Light";
+
+    [SerializeField] private Vector3 defaultCameraOffset = new Vector3(0f, 10f, -12f);
+    [SerializeField] private Vector3 defaultLightEuler = new Vector3(45f, -30f, 0f);
+    [SerializeField] private Color cameraBackgroundColor = new Color(0.25f, 0.28f, 0.32f);
+    [SerializeField] private Color directionalLightColor = new Color(1f, 0.96f, 0.9f);
+    [SerializeField] private float directionalLightIntensity = 1.1f;
+    [SerializeField] private float playerSelectionTimeout = 5f;
+    [SerializeField] private float cameraDistancePadding = 2f;
+    [SerializeField] private float cameraHeightPadding = 3f;
 
     private bool built;
+    private bool playerSelectionTimedOut;
+    private Camera mainCamera;
+    private CameraOrbit cameraOrbit;
+    private Light directionalLight;
+
+    private void Awake()
+    {
+        EnsureCameraAndLightFallback();
+    }
 
     private void Start()
     {
@@ -26,21 +46,29 @@ public class Bootstrapper : MonoBehaviour
 
         built = true;
 
+        EnsureCameraAndLightFallback();
+
         var boardGo = new GameObject("BoardRoot");
+        boardGo.transform.SetParent(transform, false);
         boardGo.transform.position = Vector3.zero;
         var board = boardGo.AddComponent<BoardBuilder>();
         board.Build();
 
+        ConfigureCameraForBoard(board);
+
         var manager = gameObject.AddComponent<GameManager>();
 
         var uiGo = new GameObject("UIRoot");
+        uiGo.transform.SetParent(transform, false);
         var ui = uiGo.AddComponent<UIController>();
         ui.Build(manager.RequestRoll);
         ui.SetRollEnabled(false);
 
         yield return WaitForPlayerSelection(ui);
 
-        int playerCount = Mathf.Clamp(ui.SelectedPlayerCount, GameConfig.MinPlayers, GameConfig.MaxPlayers);
+        int playerCount = playerSelectionTimedOut
+            ? GameConfig.DefaultPlayerCount
+            : Mathf.Clamp(ui.SelectedPlayerCount, GameConfig.MinPlayers, GameConfig.MaxPlayers);
         var selectedPlayers = GameConfig.PlayerOrder.Take(playerCount).ToList();
 
         var tokenMap = SpawnTokens(board, selectedPlayers);
@@ -49,16 +77,20 @@ public class Bootstrapper : MonoBehaviour
 
         manager.Initialise(board, tokenMap, ui, turnManager, adapter);
 
-        CreateCamera(board);
-        CreateLight();
+        ConfigureCameraForBoard(board);
     }
 
     private IEnumerator WaitForPlayerSelection(UIController ui)
     {
-        while (!ui.HasSelectedPlayerCount)
+        playerSelectionTimedOut = false;
+        float elapsed = 0f;
+        while (!ui.HasSelectedPlayerCount && elapsed < playerSelectionTimeout)
         {
+            elapsed += Time.unscaledDeltaTime;
             yield return null;
         }
+
+        playerSelectionTimedOut = !ui.HasSelectedPlayerCount;
     }
 
     private Dictionary<PlayerId, List<TokenView>> SpawnTokens(BoardBuilder board, IReadOnlyList<PlayerId> players)
@@ -95,95 +127,234 @@ public class Bootstrapper : MonoBehaviour
         return MaterialsUtil.GetOrCreate($"Team{player}", new Color(colour.r, colour.g, colour.b, colour.a));
     }
 
-    private void CreateCamera(BoardBuilder board)
+    private void ConfigureCameraForBoard(BoardBuilder board)
     {
-        var rig = new GameObject("CameraRig");
-        var camGo = new GameObject("MainCamera");
-        camGo.transform.SetParent(rig.transform, false);
-        camGo.tag = "MainCamera";
-        var camera = camGo.AddComponent<Camera>();
+        if (board == null)
+        {
+            return;
+        }
+
+        EnsureCameraAndLightFallback();
+
+        if (cameraOrbit == null)
+        {
+            return;
+        }
+
+        var bounds = CalculateBoardBounds(board);
+        cameraOrbit.Target = board.transform;
+
+        float radius = Mathf.Max(bounds.extents.x, bounds.extents.z);
+        float paddedRadius = radius + cameraDistancePadding;
+        float desiredDistance = Mathf.Max(paddedRadius, cameraOrbit.MinDistance);
+        cameraOrbit.MaxDistance = Mathf.Max(cameraOrbit.MaxDistance, desiredDistance);
+        cameraOrbit.Distance = desiredDistance;
+
+        float desiredHeight = Mathf.Max(board.PlatformHeight + cameraHeightPadding, cameraOrbit.Height);
+        cameraOrbit.Height = desiredHeight;
+        cameraOrbit.SetYaw(CalculateDefaultYaw());
+        cameraOrbit.SnapToTarget();
+    }
+
+    private Bounds CalculateBoardBounds(BoardBuilder board)
+    {
+        var renderers = board.GetComponentsInChildren<Renderer>();
+        if (renderers.Length == 0)
+        {
+            return new Bounds(board.transform.position, Vector3.one);
+        }
+
+        var bounds = renderers[0].bounds;
+        for (int i = 1; i < renderers.Length; i++)
+        {
+            bounds.Encapsulate(renderers[i].bounds);
+        }
+
+        return bounds;
+    }
+
+    private void EnsureCameraAndLightFallback()
+    {
+        mainCamera = EnsureMainCamera();
+        cameraOrbit = EnsureCameraOrbit(mainCamera);
+        directionalLight = EnsureDirectionalLight();
+    }
+
+    private Camera EnsureMainCamera()
+    {
+        Camera camera = Camera.main;
+#if UNITY_2023_1_OR_NEWER
+        camera ??= Object.FindFirstObjectByType<Camera>();
+#else
+        camera ??= Object.FindObjectOfType<Camera>();
+#endif
+        if (camera != null)
+        {
+            ConfigureCameraComponent(camera);
+            AttachCameraToRig(camera);
+            return camera;
+        }
+
+        var rig = GameObject.Find(CameraRigName) ?? new GameObject(CameraRigName);
+        var cameraGo = GameObject.Find(MainCameraName) ?? new GameObject(MainCameraName);
+        camera = cameraGo.GetComponent<Camera>() ?? cameraGo.AddComponent<Camera>();
+        ConfigureCameraComponent(camera);
+        camera.transform.SetParent(rig.transform, false);
+        camera.transform.localPosition = Vector3.zero;
+        rig.transform.position = defaultCameraOffset;
+        rig.transform.rotation = CalculateDefaultRotation();
+        return camera;
+    }
+
+    private void ConfigureCameraComponent(Camera camera)
+    {
         camera.clearFlags = CameraClearFlags.SolidColor;
-        camera.backgroundColor = new Color(0.25f, 0.28f, 0.32f);
-        camGo.AddComponent<AudioListener>();
-
-        rig.transform.position = cameraOffset;
-        camGo.transform.localPosition = Vector3.zero;
-        camGo.transform.LookAt(Vector3.up * board.PlatformHeight * 0.5f);
-
-        var orbit = rig.AddComponent<CameraOrbit>();
-        orbit.Target = board.transform;
-        orbit.Distance = new Vector2(cameraOffset.x, cameraOffset.z).magnitude;
-        orbit.Height = cameraOffset.y;
-        float yaw = Mathf.Atan2(cameraOffset.x, cameraOffset.z) * Mathf.Rad2Deg;
-        orbit.SetYaw(yaw);
-        orbit.SnapToTarget();
+        camera.backgroundColor = cameraBackgroundColor;
+        camera.tag = "MainCamera";
+        if (!camera.TryGetComponent<AudioListener>(out _))
+        {
+            camera.gameObject.AddComponent<AudioListener>();
+        }
     }
 
-    private void CreateLight()
+    private void AttachCameraToRig(Camera camera)
     {
-        var lightGo = new GameObject("Directional Light");
-        var light = lightGo.AddComponent<Light>();
+        if (camera == null)
+        {
+            return;
+        }
+
+        var rig = camera.transform.parent;
+        if (rig != null && rig.name == CameraRigName)
+        {
+            return;
+        }
+
+        var rigGo = GameObject.Find(CameraRigName) ?? new GameObject(CameraRigName);
+        camera.transform.SetParent(rigGo.transform, false);
+        camera.transform.localPosition = Vector3.zero;
+        rigGo.transform.position = defaultCameraOffset;
+        rigGo.transform.rotation = CalculateDefaultRotation();
+    }
+
+    private CameraOrbit EnsureCameraOrbit(Camera camera)
+    {
+        if (camera == null)
+        {
+            return null;
+        }
+
+        var rig = camera.transform.parent;
+        if (rig == null)
+        {
+            AttachCameraToRig(camera);
+            rig = camera.transform.parent;
+        }
+
+        if (rig == null)
+        {
+            return null;
+        }
+
+        var orbit = rig.GetComponent<CameraOrbit>();
+        if (orbit == null)
+        {
+            orbit = rig.gameObject.AddComponent<CameraOrbit>();
+        }
+
+        float defaultDistance = new Vector2(defaultCameraOffset.x, defaultCameraOffset.z).magnitude;
+        if (orbit.Distance <= 0f)
+        {
+            orbit.Distance = Mathf.Max(defaultDistance, orbit.MinDistance);
+        }
+
+        if (orbit.Height <= 0f)
+        {
+            orbit.Height = Mathf.Max(defaultCameraOffset.y, 1f);
+        }
+
+        if (orbit.Target == null)
+        {
+            orbit.SetYaw(CalculateDefaultYaw());
+            orbit.SnapToTarget();
+        }
+
+        return orbit;
+    }
+
+    private Light EnsureDirectionalLight()
+    {
+        if (directionalLight != null)
+        {
+            return directionalLight;
+        }
+
+        Light[] lights;
+#if UNITY_2023_1_OR_NEWER
+        lights = Object.FindObjectsByType<Light>(FindObjectsSortMode.None);
+#else
+        lights = Object.FindObjectsOfType<Light>();
+#endif
+        directionalLight = lights.FirstOrDefault(l => l.type == LightType.Directional);
+        if (directionalLight != null)
+        {
+            ConfigureDirectionalLight(directionalLight);
+            return directionalLight;
+        }
+
+        var lightGo = GameObject.Find(DirectionalLightName) ?? new GameObject(DirectionalLightName);
+        directionalLight = lightGo.GetComponent<Light>() ?? lightGo.AddComponent<Light>();
+        ConfigureDirectionalLight(directionalLight);
+        lightGo.transform.rotation = Quaternion.Euler(defaultLightEuler);
+        return directionalLight;
+    }
+
+    private void ConfigureDirectionalLight(Light light)
+    {
         light.type = LightType.Directional;
-        light.color = new Color(1f, 0.96f, 0.9f);
-        light.intensity = 1.1f;
+        light.color = directionalLightColor;
+        light.intensity = directionalLightIntensity;
         light.shadows = LightShadows.Soft;
-        lightGo.transform.rotation = Quaternion.Euler(lightEuler);
-    }
-}
-
-public class CameraOrbit : MonoBehaviour
-{
-    public Transform Target;
-    public float Distance = 14f;
-    public float Height = 8f;
-    public float OrbitSpeed = 90f;
-    public float ZoomSpeed = 5f;
-    public float MinDistance = 8f;
-    public float MaxDistance = 20f;
-
-    private float yaw = 45f;
-
-    public void SetYaw(float value)
-    {
-        yaw = value;
+        light.gameObject.name = DirectionalLightName;
     }
 
-    public void SnapToTarget()
+    private float CalculateDefaultYaw()
     {
-        UpdateTransform();
+        return Mathf.Atan2(defaultCameraOffset.x, defaultCameraOffset.z) * Mathf.Rad2Deg;
     }
 
-    private void LateUpdate()
+    private Quaternion CalculateDefaultRotation()
     {
-        if (Target == null)
+        Vector3 forward = -defaultCameraOffset;
+        if (forward.sqrMagnitude < 0.001f)
+        {
+            forward = Vector3.back;
+        }
+
+        return Quaternion.LookRotation(forward.normalized, Vector3.up);
+    }
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+    internal static void AutoBootstrap()
+    {
+#if UNITY_2023_1_OR_NEWER
+        var existing = Object.FindFirstObjectByType<Bootstrapper>();
+#else
+        var existing = Object.FindObjectOfType<Bootstrapper>();
+#endif
+        if (existing != null)
         {
             return;
         }
 
-        if (Input.GetMouseButton(1))
-        {
-            yaw += Input.GetAxis("Mouse X") * OrbitSpeed * Time.deltaTime;
-        }
-
-        float scroll = Input.GetAxis("Mouse ScrollWheel");
-        if (Mathf.Abs(scroll) > 0.001f)
-        {
-            Distance = Mathf.Clamp(Distance - scroll * ZoomSpeed, MinDistance, MaxDistance);
-        }
-
-        UpdateTransform();
+        var go = new GameObject(nameof(Bootstrapper));
+        go.AddComponent<Bootstrapper>();
     }
 
-    private void UpdateTransform()
+#if UNITY_EDITOR
+    public void EditorEnsureCameraAndLightFallback()
     {
-        if (Target == null)
-        {
-            return;
-        }
-
-        Vector3 offset = Quaternion.Euler(0f, yaw, 0f) * Vector3.back * Distance;
-        offset.y = Height;
-        transform.position = Target.position + offset;
-        transform.LookAt(Target.position + Vector3.up * 0.5f);
+        EnsureCameraAndLightFallback();
     }
+#endif
 }
