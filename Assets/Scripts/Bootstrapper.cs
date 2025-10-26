@@ -182,39 +182,71 @@ public class Bootstrapper : MonoBehaviour
 
     private Camera EnsureMainCamera()
     {
-        Camera camera = Camera.main;
-#if UNITY_2023_1_OR_NEWER
-        camera ??= Object.FindFirstObjectByType<Camera>();
-#else
-        camera ??= Object.FindObjectOfType<Camera>();
-#endif
-        if (camera != null)
+        if (mainCamera != null)
         {
-            ConfigureCameraComponent(camera);
-            AttachCameraToRig(camera);
-            return camera;
+            if (mainCamera)
+            {
+                ConfigureCameraComponent(mainCamera);
+                AttachCameraToRig(mainCamera);
+                return mainCamera;
+            }
+
+            mainCamera = null;
         }
 
-        var rig = GameObject.Find(CameraRigName) ?? new GameObject(CameraRigName);
-        var cameraGo = GameObject.Find(MainCameraName) ?? new GameObject(MainCameraName);
-        camera = cameraGo.GetComponent<Camera>() ?? cameraGo.AddComponent<Camera>();
+        GameObject cameraGo = GameObject.Find(MainCameraName);
+        Camera camera = null;
+
+        if (cameraGo != null)
+        {
+            camera = cameraGo.GetComponent<Camera>() ?? cameraGo.AddComponent<Camera>();
+        }
+
+        if (camera == null)
+        {
+            camera = Camera.main;
+#if UNITY_2023_1_OR_NEWER
+            camera ??= Object.FindFirstObjectByType<Camera>();
+#else
+            camera ??= Object.FindObjectOfType<Camera>();
+#endif
+        }
+
+        if (camera == null)
+        {
+            cameraGo ??= new GameObject(MainCameraName);
+            camera = cameraGo.AddComponent<Camera>();
+        }
+        else
+        {
+            cameraGo = camera.gameObject;
+        }
+
         ConfigureCameraComponent(camera);
-        camera.transform.SetParent(rig.transform, false);
-        camera.transform.localPosition = Vector3.zero;
-        rig.transform.position = defaultCameraOffset;
-        rig.transform.rotation = CalculateDefaultRotation();
+        AttachCameraToRig(camera);
+        mainCamera = camera;
         return camera;
     }
 
     private void ConfigureCameraComponent(Camera camera)
     {
+        if (camera == null)
+        {
+            return;
+        }
+
         camera.clearFlags = CameraClearFlags.SolidColor;
         camera.backgroundColor = cameraBackgroundColor;
         camera.tag = "MainCamera";
-        if (!camera.TryGetComponent<AudioListener>(out _))
+        camera.enabled = true;
+        camera.gameObject.name = MainCameraName;
+        camera.gameObject.SetActive(true);
+        if (!camera.TryGetComponent<AudioListener>(out var listener))
         {
-            camera.gameObject.AddComponent<AudioListener>();
+            listener = camera.gameObject.AddComponent<AudioListener>();
         }
+
+        EnsureSingleAudioListener(listener);
     }
 
     private void AttachCameraToRig(Camera camera)
@@ -231,6 +263,11 @@ public class Bootstrapper : MonoBehaviour
         }
 
         var rigGo = GameObject.Find(CameraRigName) ?? new GameObject(CameraRigName);
+        if (rigGo.transform.parent != transform)
+        {
+            rigGo.transform.SetParent(transform, true);
+        }
+
         camera.transform.SetParent(rigGo.transform, false);
         camera.transform.localPosition = Vector3.zero;
         rigGo.transform.position = defaultCameraOffset;
@@ -254,6 +291,11 @@ public class Bootstrapper : MonoBehaviour
         if (rig == null)
         {
             return null;
+        }
+
+        if (rig.transform.parent != transform)
+        {
+            rig.transform.SetParent(transform, true);
         }
 
         var orbit = rig.GetComponent<CameraOrbit>();
@@ -286,36 +328,98 @@ public class Bootstrapper : MonoBehaviour
     {
         if (directionalLight != null)
         {
-            return directionalLight;
+            if (directionalLight)
+            {
+                ConfigureDirectionalLight(directionalLight);
+                return directionalLight;
+            }
+
+            directionalLight = null;
         }
 
-        Light[] lights;
-#if UNITY_2023_1_OR_NEWER
-        lights = Object.FindObjectsByType<Light>(FindObjectsSortMode.None);
-#else
-        lights = Object.FindObjectsOfType<Light>();
-#endif
-        directionalLight = lights.FirstOrDefault(l => l.type == LightType.Directional);
-        if (directionalLight != null)
+        GameObject lightGo = GameObject.Find(DirectionalLightName);
+        Light light = null;
+
+        if (lightGo != null)
         {
-            ConfigureDirectionalLight(directionalLight);
-            return directionalLight;
+            light = lightGo.GetComponent<Light>();
         }
 
-        var lightGo = GameObject.Find(DirectionalLightName) ?? new GameObject(DirectionalLightName);
-        directionalLight = lightGo.GetComponent<Light>() ?? lightGo.AddComponent<Light>();
+        if (light == null)
+        {
+            Light[] lights;
+#if UNITY_2023_1_OR_NEWER
+            lights = Object.FindObjectsByType<Light>(FindObjectsSortMode.None);
+#else
+            lights = Object.FindObjectsOfType<Light>();
+#endif
+            foreach (var candidate in lights)
+            {
+                if (candidate != null && candidate.type == LightType.Directional)
+                {
+                    light = candidate;
+                    break;
+                }
+            }
+        }
+
+        if (light == null)
+        {
+            lightGo ??= new GameObject(DirectionalLightName);
+            light = lightGo.GetComponent<Light>() ?? lightGo.AddComponent<Light>();
+        }
+        else
+        {
+            lightGo = light.gameObject;
+        }
+
+        directionalLight = light;
         ConfigureDirectionalLight(directionalLight);
-        lightGo.transform.rotation = Quaternion.Euler(defaultLightEuler);
+
+        if (lightGo.transform.parent != transform)
+        {
+            lightGo.transform.SetParent(transform, true);
+        }
+
         return directionalLight;
     }
 
     private void ConfigureDirectionalLight(Light light)
     {
+        if (light == null)
+        {
+            return;
+        }
+
         light.type = LightType.Directional;
         light.color = directionalLightColor;
         light.intensity = directionalLightIntensity;
         light.shadows = LightShadows.Soft;
         light.gameObject.name = DirectionalLightName;
+        light.enabled = true;
+        light.gameObject.SetActive(true);
+        light.transform.rotation = Quaternion.Euler(defaultLightEuler);
+    }
+
+    private static void EnsureSingleAudioListener(AudioListener activeListener)
+    {
+        if (activeListener == null)
+        {
+            return;
+        }
+
+#if UNITY_2023_1_OR_NEWER
+        var listeners = Object.FindObjectsByType<AudioListener>(FindObjectsSortMode.None);
+#else
+        var listeners = Object.FindObjectsOfType<AudioListener>();
+#endif
+        foreach (var listener in listeners)
+        {
+            if (listener != null && listener != activeListener)
+            {
+                listener.enabled = false;
+            }
+        }
     }
 
     private float CalculateDefaultYaw()
